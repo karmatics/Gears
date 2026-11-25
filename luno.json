@@ -1,0 +1,40 @@
+{
+  "name": "Gears",
+  "version": "1.0.0",
+  "description": "Meshing hypoid differential gears with involute Bezier surface teeth.",
+  "type": "luno-web-app",
+  "mainClass": "Gears",
+  "entrypoint": {
+    "file": "Gears.js",
+    "class": "Gears",
+    "method": "run"
+  },
+  "main": [
+    "ModelLoader.js",
+    "Simple3dShapes.js",
+    "BezierSurface.js",
+    "HypoidGearGenerator.js",
+    "Gears.js"
+  ],
+  "library": [
+    "DomBasics.js",
+    "UITools.js",
+    "ThreeJSLoader.js"
+  ],
+  "styles": [
+    "basic3d.css"
+  ],
+  "visibilitySets": {
+    "basic3d-lean": [
+      "Gears/luno.json",
+      "Gears/BezierSurface.js",
+      "Gears/HypoidGearGenerator.js",
+      "Gears/Gears.js",
+      "Gears/basic3d.css",
+      "Gears/index.html"
+    ]
+  },
+  "processedCountSinceCheckpoint": 0,
+  "lastCheckpointTime": "2026-11-25T08:34:38.945Z",
+  "pendingCheckpointDescription": "Clean fork initialized from Basic3D"
+}
