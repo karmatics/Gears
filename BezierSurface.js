@@ -273,6 +273,117 @@ class BezierSurface {
     geom.setIndex(indices);
     return geom;
   }
+
+  static buildIsoWireframeGeometry(THREE, patches, strideU = 2, strideV = 2, normalOffset = 0.0006) {
+      const positions = [];
+
+      for (const item of patches) {
+        const segU = item.segU;
+        const segV = item.segV;
+        const sign = item.flipWinding ? -1 : 1;
+        const grid = Array.from({ length: segU + 1 }, (_, i) => {
+          const u = i / segU;
+          return Array.from({ length: segV + 1 }, (_, j) => {
+            const v = j / segV;
+            const ev = item.surface.evaluateWithPartials(u, v);
+            return {
+              x: ev.point.x + ev.normal.x * sign * normalOffset,
+              y: ev.point.y + ev.normal.y * sign * normalOffset,
+              z: ev.point.z + ev.normal.z * sign * normalOffset
+            };
+          });
+        });
+
+        const uIndices = [];
+        for (let i = 0; i <= segU; i += strideU) uIndices.push(i);
+        if (uIndices[uIndices.length - 1] !== segU) uIndices.push(segU);
+
+        for (const i of uIndices) {
+          for (let j = 0; j < segV; j++) {
+            const a = grid[i][j];
+            const b = grid[i][j + 1];
+            positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+          }
+        }
+
+        const vIndices = [];
+        for (let j = 0; j <= segV; j += strideV) vIndices.push(j);
+        if (vIndices[vIndices.length - 1] !== segV) vIndices.push(segV);
+
+        for (const j of vIndices) {
+          for (let i = 0; i < segU; i++) {
+            const a = grid[i][j];
+            const b = grid[i + 1][j];
+            positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+          }
+        }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return geom;
+    }
+
+  static buildDiagnosticGeometry(THREE, patches) {
+      const palette = [
+        [0.16, 0.78, 0.52],
+        [0.95, 0.42, 0.36],
+        [0.98, 0.75, 0.22],
+        [0.42, 0.50, 0.62],
+        [0.22, 0.80, 0.96],
+        [0.86, 0.44, 0.92]
+      ];
+
+      const positions = [];
+      const normals = [];
+      const colors = [];
+      const indices = [];
+      let vertexOffset = 0;
+
+      for (let pIdx = 0; pIdx < patches.length; pIdx++) {
+        const item = patches[pIdx];
+        const col = item.color || palette[pIdx % palette.length];
+        const data = item.surface.sampleMeshData(item.segU, item.segV, item.flipWinding);
+        const vCount = data.positions.length / 3;
+        for (let k = 0; k < data.positions.length; k++) positions.push(data.positions[k]);
+        for (let k = 0; k < data.normals.length; k++) normals.push(data.normals[k]);
+        for (let k = 0; k < vCount; k++) colors.push(col[0], col[1], col[2]);
+        for (let k = 0; k < data.indices.length; k++) indices.push(data.indices[k] + vertexOffset);
+        vertexOffset += vCount;
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geom.setIndex(indices);
+      return geom;
+    }
+
+  static buildNormalNeedlesGeometry(THREE, patches, length = 0.032) {
+      const positions = [];
+      const samples = [0.15, 0.5, 0.85];
+
+      for (const item of patches) {
+        const sign = item.flipWinding ? -1 : 1;
+        for (const u of samples) {
+          for (const v of samples) {
+            const ev = item.surface.evaluateWithPartials(u, v);
+            const nx = ev.normal.x * sign;
+            const ny = ev.normal.y * sign;
+            const nz = ev.normal.z * sign;
+            positions.push(
+              ev.point.x, ev.point.y, ev.point.z,
+              ev.point.x + nx * length, ev.point.y + ny * length, ev.point.z + nz * length
+            );
+          }
+        }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return geom;
+    }
 }
 
 globalThis.BezierSurface = BezierSurface;

@@ -35,6 +35,7 @@ class HypoidGearGenerator {
   }
 
   static generatePair(THREE, opts = {}) {
+      const tStart = performance.now();
       const NP = Math.max(6, Math.round(opts.pinionTeeth || 11));
       const NG = Math.max(16, Math.round(opts.ringTeeth || 34));
       const E = Math.max(0.10, Math.min(0.55, opts.offset !== undefined ? opts.offset : 0.42));
@@ -99,20 +100,21 @@ class HypoidGearGenerator {
       const nGx = HypoidGearGenerator.vecDot(Ns0, uG);
       const nGr = HypoidGearGenerator.vecDot(Ns0, rHatG0);
       const cosGammaG = Math.abs(nGr);
+      const gammaG = Math.atan2(-nGx, nGr);
 
-      const minSafeZ = Math.max(0.30, zP0 - (rP0 / Math.max(0.15, Math.abs(tanGammaP))) * 0.60);
-      const zToe = Math.max(minSafeZ + 0.12, zP0 - 0.18);
+      const minSafeZ = Math.max(0.16, zP0 - (rP0 / Math.max(0.12, Math.abs(tanGammaP))) * 0.72);
+      const zToe = Math.max(minSafeZ + 0.14, zP0 - 0.18);
       const zHeel = zP0 + 0.28;
-      const zMinExt = Math.max(minSafeZ, zToe - 0.14);
-      const zMaxExt = zHeel + 0.14;
+      const zMinExt = Math.max(minSafeZ, zToe - 0.34);
+      const zMaxExt = zHeel + 0.34;
 
-      const numSpiralSteps = 400;
+      const numSpiralSteps = 480;
       const dz = (zMaxExt - zMinExt) / numSpiralSteps;
       const zGrid = new Array(numSpiralSteps + 1);
       const thetaGrid = new Array(numSpiralSteps + 1);
 
       const spiralSlopeAtZ = (zVal) => {
-        const rP = Math.max(0.08, rP0 + (zVal - zP0) * tanGammaP);
+        const rP = Math.max(0.06, rP0 + (zVal - zP0) * tanGammaP);
         const qLoc = { x: rP * Math.cos(thetaP0), y: rP * Math.sin(thetaP0), z: zVal };
         const p = HypoidGearGenerator.vecAdd(Op, pinionLocalToWorldVec(qLoc));
         const vG = { x: 0, y: -omegaG * p.z, z: omegaG * p.y };
@@ -147,7 +149,7 @@ class HypoidGearGenerator {
         const idx = Math.min(numSpiralSteps - 1, Math.max(0, Math.floor(f)));
         const t = f - idx;
         const theta = thetaGrid[idx] * (1 - t) + thetaGrid[idx + 1] * t;
-        const rP = Math.max(0.08, rP0 + (clamped - zP0) * tanGammaP);
+        const rP = Math.max(0.06, rP0 + (clamped - zP0) * tanGammaP);
         const dThetaDz = spiralSlopeAtZ(clamped);
 
         const qLoc = { x: rP * Math.cos(theta), y: rP * Math.sin(theta), z: clamped };
@@ -224,20 +226,86 @@ class HypoidGearGenerator {
         return { pos, st };
       };
 
+      const xG0 = P0.x;
+      const gGx = nGr;
+      const gGr = -nGx;
+      const evalRingSG = (p) => (p.x - xG0) * gGx + (Math.hypot(p.y, p.z) - rG0) * gGr;
+
+      const sToeCenter = evalRingSG(evalRingToothCenter(zToe).pos);
+      const sHeelCenter = evalRingSG(evalRingToothCenter(zHeel).pos);
+
+      let sGMinBound = -1e9;
+      let sGMaxBound = 1e9;
+      for (const side of [+1, -1]) {
+        for (const hTest of [-hdG, 0, +haG]) {
+          const sLo = evalRingSG(evalRingFlankPoint(zMinExt, hTest, side).pos);
+          const sHi = evalRingSG(evalRingFlankPoint(zMaxExt, hTest, side).pos);
+          sGMinBound = Math.max(sGMinBound, Math.min(sLo, sHi));
+          sGMaxBound = Math.min(sGMaxBound, Math.max(sLo, sHi));
+        }
+      }
+
+      const sToeG = Math.max(sToeCenter, sGMinBound + 0.006);
+      const sHeelG = Math.min(sHeelCenter, sGMaxBound - 0.006);
+
       const nodes6 = BezierSurface.chebyshevLobattoNodes(6);
-      const buildRingFlankSurface = (side, zStart, zEnd, hMin, hMax) => {
+      const buildRingFlankSurface = (side, sStart, sEnd, hMin, hMax) => {
+        const numBracket = 36;
+        const zBrackets = Array.from({ length: numBracket + 1 }, (_, k) =>
+          zMinExt + (k / numBracket) * (zMaxExt - zMinExt)
+        );
+
+        const solveZAtS = (hFrac, sTarget, sBrackets) => {
+          const increasing = sBrackets[numBracket] >= sBrackets[0];
+          let lo = zMinExt;
+          let hi = zMaxExt;
+          let found = false;
+
+          for (let k = 0; k < numBracket; k++) {
+            const a = sBrackets[k];
+            const b = sBrackets[k + 1];
+            if ((a <= sTarget && sTarget <= b) || (b <= sTarget && sTarget <= a)) {
+              lo = zBrackets[k];
+              hi = zBrackets[k + 1];
+              found = true;
+              break;
+            }
+          }
+
+          if (!found) {
+            const useStart = increasing ? sTarget <= sBrackets[0] : sTarget >= sBrackets[0];
+            return evalRingFlankPoint(useStart ? zMinExt : zMaxExt, hFrac, side).pos;
+          }
+
+          let sLo = evalRingSG(evalRingFlankPoint(lo, hFrac, side).pos);
+          for (let iter = 0; iter < 28; iter++) {
+            const mid = 0.5 * (lo + hi);
+            const sMid = evalRingSG(evalRingFlankPoint(mid, hFrac, side).pos);
+            if ((sLo <= sTarget && sMid <= sTarget) || (sLo >= sTarget && sMid >= sTarget)) {
+              lo = mid;
+              sLo = sMid;
+            } else {
+              hi = mid;
+            }
+          }
+          return evalRingFlankPoint(0.5 * (lo + hi), hFrac, side).pos;
+        };
+
         const grid = Array.from({ length: 6 }, (_, a) => {
           const hFrac = hMin + nodes6[a] * (hMax - hMin);
+          const sBrackets = zBrackets.map((zv) =>
+            evalRingSG(evalRingFlankPoint(zv, hFrac, side).pos)
+          );
           return Array.from({ length: 6 }, (_, b) => {
-            const zVal = zStart + nodes6[b] * (zEnd - zStart);
-            return evalRingFlankPoint(zVal, hFrac, side).pos;
+            const sTarget = sStart + nodes6[b] * (sEnd - sStart);
+            return solveZAtS(hFrac, sTarget, sBrackets);
           });
         });
         return BezierSurface.fitFromGrid(grid, 5, 5, nodes6, nodes6);
       };
 
-      const ringDriveSurf = buildRingFlankSurface(+1, zToe, zHeel, -hdG, +haG);
-      const ringCoastSurf = buildRingFlankSurface(-1, zToe, zHeel, -hdG, +haG);
+      const ringDriveSurf = buildRingFlankSurface(+1, sToeG, sHeelG, -hdG, +haG);
+      const ringCoastSurf = buildRingFlankSurface(-1, sToeG, sHeelG, -hdG, +haG);
 
       const ringMidArc = (drivePt, coastPt) => {
         const my = 0.5 * (drivePt.y + coastPt.y);
@@ -251,12 +319,14 @@ class HypoidGearGenerator {
         ringDriveSurf,
         ringCoastSurf,
         nodes6,
-        ringMidArc
+        ringMidArc,
+        16,
+        20
       );
       const ringToothGeometry = BezierSurface.buildGeometryFromPatches(THREE, ringPatches);
 
-      const hExtMin = -1.32;
-      const hExtMax = 0.66;
+      const hExtMin = -1.78;
+      const hExtMax = 0.94;
       const solvePinionAnalytical = (u, v, side, ringToothShift) => {
         const hFrac = hExtMin + u * (hExtMax - hExtMin);
         const zVal = zMinExt + v * (zMaxExt - zMinExt);
@@ -288,10 +358,17 @@ class HypoidGearGenerator {
         const B = omegaPVec.z * m.y + omegaPVec.x * E * nG.y;
         const C = (omegaG - omegaPVec.x) * m.x + omegaPVec.z * E * nG.x;
 
-        const R = Math.hypot(A, B) || 1e-12;
+        const R = Math.hypot(A, B);
+        if (R < 1e-9) {
+          return { valid: false, p: { x: 0, y: 0, z: 0 }, s: 0, h: 0, r: 0, z: 0, theta: 0 };
+        }
+        const rawRatio = C / R;
+        if (!Number.isFinite(rawRatio) || Math.abs(rawRatio) > 0.997) {
+          return { valid: false, p: { x: 0, y: 0, z: 0 }, s: 0, h: 0, r: 0, z: 0, theta: 0 };
+        }
+
         const psi = Math.atan2(B, A);
-        const ratio = Math.max(-1, Math.min(1, C / R));
-        const d = Math.acos(ratio);
+        const d = Math.acos(rawRatio);
 
         const phiGEst = center.st.phiG;
         const r1 = psi + d;
@@ -307,26 +384,60 @@ class HypoidGearGenerator {
         const pPinion = worldToPinionLocal(qUnrot);
 
         const rP = Math.hypot(pPinion.x, pPinion.y);
+        if (!Number.isFinite(rP) || rP < 0.04 || pPinion.z < 0.05) {
+          return { valid: false, p: { x: 0, y: 0, z: 0 }, s: 0, h: 0, r: 0, z: 0, theta: 0 };
+        }
+
         const sP = (rP - rP0) * gPx_cone + (pPinion.z - zP0) * gPz_cone;
         const hP = (rP - rP0) * nPx_cone + (pPinion.z - zP0) * nPz_cone;
         const thetaP = Math.atan2(pPinion.y, pPinion.x);
 
-        return { p: pPinion, s: sP, h: hP, r: rP, z: pPinion.z, theta: thetaP };
+        return { valid: true, p: pPinion, s: sP, h: hP, r: rP, z: pPinion.z, theta: thetaP };
       };
 
       const samplePinionConjGrid = (side, ringToothShift) => {
-        const nU = 64;
-        const nV = 64;
+        const nU = 72;
+        const nV = 72;
         const raw = Array.from({ length: nU + 1 }, (_, i) =>
           Array.from({ length: nV + 1 }, (_, j) =>
             solvePinionAnalytical(i / nU, j / nV, side, ringToothShift)
           )
         );
-        const refTheta = raw[Math.floor(nU / 2)][Math.floor(nV / 2)].theta;
+
+        let seedI = -1;
+        let seedJ = -1;
+        let bestDist2 = 1e9;
+        const ci = Math.floor(nU / 2);
+        const cj = Math.floor(nV / 2);
         for (let i = 0; i <= nU; i++) {
           for (let j = 0; j <= nV; j++) {
-            const prev = j > 0 ? raw[i][j - 1].theta : (i > 0 ? raw[i - 1][0].theta : refTheta);
-            raw[i][j].theta = prev + HypoidGearGenerator.wrapPi(raw[i][j].theta - prev);
+            if (!raw[i][j].valid) continue;
+            const d2 = (i - ci) * (i - ci) + (j - cj) * (j - cj);
+            if (d2 < bestDist2) {
+              bestDist2 = d2;
+              seedI = i;
+              seedJ = j;
+            }
+          }
+        }
+
+        if (seedI >= 0) {
+          const visited = Array.from({ length: nU + 1 }, () => new Uint8Array(nV + 1));
+          const queue = [[seedI, seedJ]];
+          visited[seedI][seedJ] = 1;
+          let head = 0;
+          const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          while (head < queue.length) {
+            const [i, j] = queue[head++];
+            const baseTh = raw[i][j].theta;
+            for (const [di, dj] of dirs) {
+              const ni = i + di;
+              const nj = j + dj;
+              if (ni < 0 || ni > nU || nj < 0 || nj > nV || visited[ni][nj] || !raw[ni][nj].valid) continue;
+              raw[ni][nj].theta = baseTh + HypoidGearGenerator.wrapPi(raw[ni][nj].theta - baseTh);
+              visited[ni][nj] = 1;
+              queue.push([ni, nj]);
+            }
           }
         }
         return raw;
@@ -335,9 +446,124 @@ class HypoidGearGenerator {
       const pinionPlusConj = samplePinionConjGrid(-1, 0);
       const pinionMinusConj = samplePinionConjGrid(+1, -(2 * Math.PI) / NG);
 
+      const buildConjLookup = (grid) => {
+        const rows = grid.length - 1;
+        const cols = grid[0].length - 1;
+        let posVotes = 0;
+        let negVotes = 0;
+        for (let i = Math.floor(rows * 0.3); i <= Math.ceil(rows * 0.7); i++) {
+          for (let j = Math.floor(cols * 0.3); j <= Math.ceil(cols * 0.7); j++) {
+            const a = grid[i][j], b = grid[i + 1][j], c = grid[i + 1][j + 1];
+            if (!a.valid || !b.valid || !c.valid) continue;
+            const det = (b.s - a.s) * (c.h - a.h) - (c.s - a.s) * (b.h - a.h);
+            if (det > 1e-10) posVotes++;
+            else if (det < -1e-10) negVotes++;
+          }
+        }
+        const detSign = posVotes >= negVotes ? 1 : -1;
+
+        const tris = [];
+        let sMin = 1e9, sMax = -1e9, hMin = 1e9, hMax = -1e9;
+        const tryPushTri = (p0, p1, p2) => {
+          if (!p0.valid || !p1.valid || !p2.valid) return;
+          if (Math.abs(p1.theta - p0.theta) > 0.85 || Math.abs(p2.theta - p0.theta) > 0.85) return;
+          const v0s = p1.s - p0.s, v0h = p1.h - p0.h;
+          const v1s = p2.s - p0.s, v1h = p2.h - p0.h;
+          const det = v0s * v1h - v1s * v0h;
+          if (det * detSign <= 1e-10) return;
+
+          const tSMin = Math.min(p0.s, p1.s, p2.s);
+          const tSMax = Math.max(p0.s, p1.s, p2.s);
+          const tHMin = Math.min(p0.h, p1.h, p2.h);
+          const tHMax = Math.max(p0.h, p1.h, p2.h);
+          if (tSMin < sMin) sMin = tSMin;
+          if (tSMax > sMax) sMax = tSMax;
+          if (tHMin < hMin) hMin = tHMin;
+          if (tHMax > hMax) hMax = tHMax;
+          tris.push({ p0, p1, p2, v0s, v0h, v1s, v1h, det, tSMin, tSMax, tHMin, tHMax });
+        };
+
+        for (let i = 0; i < rows; i++) {
+          for (let j = 0; j < cols; j++) {
+            const a = grid[i][j], b = grid[i + 1][j], c = grid[i + 1][j + 1], d = grid[i][j + 1];
+            tryPushTri(a, b, c);
+            tryPushTri(a, c, d);
+          }
+        }
+
+        const binsX = 32;
+        const binsY = 32;
+        const spanS = Math.max(1e-6, sMax - sMin);
+        const spanH = Math.max(1e-6, hMax - hMin);
+        const bins = Array.from({ length: binsX * binsY }, () => []);
+        for (let tIdx = 0; tIdx < tris.length; tIdx++) {
+          const t = tris[tIdx];
+          const bx0 = Math.max(0, Math.min(binsX - 1, Math.floor(((t.tSMin - sMin) / spanS) * binsX)));
+          const bx1 = Math.max(0, Math.min(binsX - 1, Math.floor(((t.tSMax - sMin) / spanS) * binsX)));
+          const by0 = Math.max(0, Math.min(binsY - 1, Math.floor(((t.tHMin - hMin) / spanH) * binsY)));
+          const by1 = Math.max(0, Math.min(binsY - 1, Math.floor(((t.tHMax - hMin) / spanH) * binsY)));
+          for (let bx = bx0; bx <= bx1; bx++) {
+            for (let by = by0; by <= by1; by++) {
+              bins[by * binsX + bx].push(tIdx);
+            }
+          }
+        }
+        return { tris, bins, binsX, binsY, sMin, sMax, hMin, hMax, spanS, spanH };
+      };
+
+      const lookupPlus = buildConjLookup(pinionPlusConj);
+      const lookupMinus = buildConjLookup(pinionMinusConj);
+
+      const evalLookup = (lookup, sTarget, hTarget) => {
+        if (lookup.tris.length === 0) {
+          return { point: { x: rP0 * Math.cos(thetaP0), y: rP0 * Math.sin(thetaP0), z: zP0 }, theta: thetaP0, minW: -1 };
+        }
+        let bestTri = null;
+        let bestMinW = -1e9;
+        let bestW = null;
+        const testCandidate = (t) => {
+          const v2s = sTarget - t.p0.s;
+          const v2h = hTarget - t.p0.h;
+          const w1 = (v2s * t.v1h - t.v1s * v2h) / t.det;
+          const w2 = (t.v0s * v2h - v2s * t.v0h) / t.det;
+          const w0 = 1 - w1 - w2;
+          const minW = Math.min(w0, w1, w2);
+          if (minW > bestMinW) {
+            bestMinW = minW;
+            bestTri = t;
+            bestW = [w0, w1, w2];
+          }
+        };
+
+        const bx = Math.max(0, Math.min(lookup.binsX - 1, Math.floor(((sTarget - lookup.sMin) / lookup.spanS) * lookup.binsX)));
+        const by = Math.max(0, Math.min(lookup.binsY - 1, Math.floor(((hTarget - lookup.hMin) / lookup.spanH) * lookup.binsY)));
+        const binList = lookup.bins[by * lookup.binsX + bx];
+        for (let k = 0; k < binList.length; k++) testCandidate(lookup.tris[binList[k]]);
+
+        if (!bestTri || bestMinW < -0.02) {
+          for (let k = 0; k < lookup.tris.length; k++) testCandidate(lookup.tris[k]);
+        }
+
+        const { p0, p1, p2 } = bestTri;
+        let [w0, w1, w2] = bestW;
+        if (bestMinW < 0) {
+          w0 = Math.max(0, w0);
+          w1 = Math.max(0, w1);
+          w2 = Math.max(0, w2);
+          const sum = w0 + w1 + w2 || 1;
+          w0 /= sum;
+          w1 /= sum;
+          w2 /= sum;
+        }
+        const r = w0 * p0.r + w1 * p1.r + w2 * p2.r;
+        const z = w0 * p0.z + w1 * p1.z + w2 * p2.z;
+        const th = w0 * p0.theta + w1 * p1.theta + w2 * p2.theta;
+        return { point: { x: r * Math.cos(th), y: r * Math.sin(th), z }, theta: th, minW: bestMinW };
+      };
+
       const mnSamples = [];
-      for (let i = 0; i <= 40; i++) {
-        const zVal = zMinExt + (i / 40) * (zMaxExt - zMinExt);
+      for (let i = 0; i <= 48; i++) {
+        const zVal = zMinExt + (i / 48) * (zMaxExt - zMinExt);
         const st = evalPinionSpiral(zVal);
         mnSamples.push({ s: st.sP, mn: st.mn });
       }
@@ -355,102 +581,80 @@ class HypoidGearGenerator {
         return mnSamples[Math.floor(last / 2)].mn;
       };
 
-      const getConjSRange = (grid) => {
-        let sMin = -1e9;
-        let sMax = 1e9;
-        for (let i = 0; i < grid.length; i++) {
-          const row = grid[i];
-          sMin = Math.max(sMin, Math.min(row[0].s, row[row.length - 1].s));
-          sMax = Math.min(sMax, Math.max(row[0].s, row[row.length - 1].s));
+      const sMidP = evalPinionSpiral(zP0).sP;
+      const sToeNom = evalPinionSpiral(zToe).sP;
+      const sHeelNom = evalPinionSpiral(zHeel).sP;
+      const midPlusPitch = evalLookup(lookupPlus, sMidP, 0);
+      const midMinusPitch = evalLookup(lookupMinus, sMidP, 0);
+      const thicknessSign = midMinusPitch.theta >= midPlusPitch.theta ? 1 : -1;
+
+      const isSValidOnBoth = (sVal) => {
+        const mnLocal = evalMnAtSP(sVal);
+        for (const u of [0, 0.25, 0.5, 0.75, 1.0]) {
+          const hT = (-hdP + u * (haP + hdP)) * mnLocal;
+          const rP = evalLookup(lookupPlus, sVal, hT);
+          const rM = evalLookup(lookupMinus, sVal, hT);
+          if (rP.minW < -2e-4 || rM.minW < -2e-4) return false;
+          if (u === 1.0 && (rM.theta - rP.theta) * thicknessSign < 0.015) return false;
         }
-        return [sMin, sMax];
+        return true;
       };
-      const [pMin1, pMax1] = getConjSRange(pinionPlusConj);
-      const [pMin2, pMax2] = getConjSRange(pinionMinusConj);
-      const sToeP = Math.max(evalPinionSpiral(zToe).sP, pMin1 + 0.02, pMin2 + 0.02);
-      const sHeelP = Math.min(evalPinionSpiral(zHeel).sP, pMax1 - 0.02, pMax2 - 0.02);
 
-      const evalPinionFromTriGrid = (grid, sTarget, hTarget) => {
-        const rows = grid.length - 1;
-        const cols = grid[0].length - 1;
-        const ci = Math.floor(rows / 2);
-        const cj = Math.floor(cols / 2);
-        const ca = grid[ci][cj], cb = grid[ci + 1][cj], cc = grid[ci + 1][cj + 1];
-        const refDet = (cb.s - ca.s) * (cc.h - ca.h) - (cc.s - ca.s) * (cb.h - ca.h);
-        const detSign = refDet >= 0 ? 1 : -1;
-
-        let bestTri = null;
-        let bestMinW = -1e9;
-        let bestW = null;
-
-        const checkTri = (p0, p1, p2) => {
-          const v0s = p1.s - p0.s, v0h = p1.h - p0.h;
-          const v1s = p2.s - p0.s, v1h = p2.h - p0.h;
-          const det = v0s * v1h - v1s * v0h;
-          if (det * detSign <= 1e-12) return;
-          const v2s = sTarget - p0.s, v2h = hTarget - p0.h;
-          const w1 = (v2s * v1h - v1s * v2h) / det;
-          const w2 = (v0s * v2h - v2s * v0h) / det;
-          const w0 = 1 - w1 - w2;
-          const minW = Math.min(w0, w1, w2);
-          if (minW > bestMinW) {
-            bestMinW = minW;
-            bestTri = [p0, p1, p2];
-            bestW = [w0, w1, w2];
-          }
-        };
-
-        for (let i = 0; i < rows; i++) {
-          for (let j = 0; j < cols; j++) {
-            const a = grid[i][j];
-            const b = grid[i + 1][j];
-            const c = grid[i + 1][j + 1];
-            const d = grid[i][j + 1];
-            checkTri(a, b, c);
-            checkTri(a, c, d);
+      const findValidLimit = (sStart, sTarget) => {
+        if (isSValidOnBoth(sTarget)) return sTarget;
+        let lastOk = sStart;
+        let firstFail = sTarget;
+        let hitFail = false;
+        for (let k = 1; k <= 40; k++) {
+          const sTry = sStart + (k / 40) * (sTarget - sStart);
+          if (isSValidOnBoth(sTry)) lastOk = sTry;
+          else {
+            firstFail = sTry;
+            hitFail = true;
+            break;
           }
         }
-
-        if (!bestTri) {
-          const p = grid[ci][cj];
-          return { x: p.r * Math.cos(p.theta), y: p.r * Math.sin(p.theta), z: p.z };
+        if (!hitFail) return lastOk;
+        let lo = lastOk;
+        let hi = firstFail;
+        for (let iter = 0; iter < 10; iter++) {
+          const mid = 0.5 * (lo + hi);
+          if (isSValidOnBoth(mid)) lo = mid;
+          else hi = mid;
         }
-
-        const [p0, p1, p2] = bestTri;
-        let [w0, w1, w2] = bestW;
-        if (bestMinW < 0) {
-          w0 = Math.max(0, w0);
-          w1 = Math.max(0, w1);
-          w2 = Math.max(0, w2);
-          const sum = w0 + w1 + w2 || 1;
-          w0 /= sum;
-          w1 /= sum;
-          w2 /= sum;
-        }
-        const r = w0 * p0.r + w1 * p1.r + w2 * p2.r;
-        const z = w0 * p0.z + w1 * p1.z + w2 * p2.z;
-        const th = w0 * p0.theta + w1 * p1.theta + w2 * p2.theta;
-        return { x: r * Math.cos(th), y: r * Math.sin(th), z };
+        return lo - Math.sign(sTarget - sStart) * 0.006;
       };
+
+      let sToeP = findValidLimit(sMidP, sToeNom);
+      let sHeelP = findValidLimit(sMidP, sHeelNom);
+      if (sHeelP - sToeP < 0.12) {
+        const mid = 0.5 * (sToeP + sHeelP);
+        sToeP = mid - 0.06;
+        sHeelP = mid + 0.06;
+      }
 
       const sampleCount = 17;
-      const uList = Array.from({ length: sampleCount }, (_, i) => i / (sampleCount - 1));
-      const vList = Array.from({ length: sampleCount }, (_, j) => j / (sampleCount - 1));
+      const uNodes = BezierSurface.chebyshevLobattoNodes(sampleCount);
+      const vNodes = BezierSurface.chebyshevLobattoNodes(sampleCount);
+      let clampedQueries = 0;
+      const totalQueries = sampleCount * sampleCount * 2;
 
-      const buildPinionConjSurface = (conjGrid) => {
-        const sampleGrid = uList.map((u) =>
-          vList.map((v) => {
+      const buildPinionConjSurface = (lookup) => {
+        const sampleGrid = uNodes.map((u) =>
+          vNodes.map((v) => {
             const sTarget = sToeP + v * (sHeelP - sToeP);
             const mnLocal = evalMnAtSP(sTarget);
             const hTarget = (-hdP + u * (haP + hdP)) * mnLocal;
-            return evalPinionFromTriGrid(conjGrid, sTarget, hTarget);
+            const res = evalLookup(lookup, sTarget, hTarget);
+            if (res.minW < -1e-3) clampedQueries++;
+            return res.point;
           })
         );
-        return HypoidGearGenerator.fitBezierLeastSquares(sampleGrid, uList, vList, 4, 4);
+        return HypoidGearGenerator.fitBezierLeastSquares(sampleGrid, uNodes, vNodes, 5, 4);
       };
 
-      const pinionDriveSurf = buildPinionConjSurface(pinionPlusConj);
-      const pinionCoastSurf = buildPinionConjSurface(pinionMinusConj);
+      const pinionDriveSurf = buildPinionConjSurface(lookupPlus);
+      const pinionCoastSurf = buildPinionConjSurface(lookupMinus);
 
       const pinionMidArc = (drivePt, coastPt) => {
         const mx = 0.5 * (drivePt.x + coastPt.x);
@@ -465,17 +669,44 @@ class HypoidGearGenerator {
         pinionDriveSurf,
         pinionCoastSurf,
         nodes5,
-        pinionMidArc
+        pinionMidArc,
+        16,
+        20
       );
       const pinionToothGeometry = BezierSurface.buildGeometryFromPatches(THREE, pinionPatches);
 
-      const lathes = HypoidGearGenerator.buildMechanicalLathes(THREE, ringDriveSurf, pinionDriveSurf);
+      const ringIsoGeometry = BezierSurface.buildIsoWireframeGeometry(THREE, ringPatches, 2, 2);
+      const pinionIsoGeometry = BezierSurface.buildIsoWireframeGeometry(THREE, pinionPatches, 2, 2);
+      const ringDiagGeometry = BezierSurface.buildDiagnosticGeometry(THREE, ringPatches);
+      const pinionDiagGeometry = BezierSurface.buildDiagnosticGeometry(THREE, pinionPatches);
+      const ringNormalNeedles = BezierSurface.buildNormalNeedlesGeometry(THREE, ringPatches, 0.032);
+      const pinionNormalNeedles = BezierSurface.buildNormalNeedlesGeometry(THREE, pinionPatches, 0.028);
+
+      const lathes = HypoidGearGenerator.buildMechanicalLathes(
+        THREE,
+        ringDriveSurf,
+        ringCoastSurf,
+        pinionDriveSurf,
+        pinionCoastSurf
+      );
+
+      const midSpiral = evalPinionSpiral(zP0);
+      const midRingFrame = evalRingFrame(zP0);
+      const buildMs = performance.now() - tStart;
 
       return {
         pinionToothGeometry,
         ringToothGeometry,
+        ringIsoGeometry,
+        pinionIsoGeometry,
+        ringDiagGeometry,
+        pinionDiagGeometry,
+        ringNormalNeedles,
+        pinionNormalNeedles,
         pinionBodyGeometry: lathes.pinionBodyGeometry,
         ringBodyGeometry: lathes.ringBodyGeometry,
+        ringBodyWireGeometry: lathes.ringBodyWireGeometry,
+        pinionBodyWireGeometry: lathes.pinionBodyWireGeometry,
         mechanics: lathes.mechanics,
         pinionTeeth: NP,
         ringTeeth: NG,
@@ -483,10 +714,32 @@ class HypoidGearGenerator {
         shaftAngleDeg,
         pinionAxisOffset: Op,
         pinionBasis: { wP, yAxis, uP },
-        meshFocus: P0
+        meshFocus: P0,
+        diagnostics: {
+          gammaPDeg: (gammaP * 180) / Math.PI,
+          gammaGDeg: (gammaG * 180) / Math.PI,
+          psiPDeg: (Math.acos(midSpiral.cosPsi) * 180) / Math.PI,
+          psiGDeg: (Math.acos(midRingFrame.cosPsiG) * 180) / Math.PI,
+          sToeP,
+          sHeelP,
+          sToeG,
+          sHeelG,
+          rG0,
+          xG0,
+          gGx,
+          gGr,
+          rP0,
+          zP0,
+          tanGammaP,
+          zToe,
+          zHeel,
+          validPct: 100 * (1 - clampedQueries / Math.max(1, totalQueries)),
+          buildMs
+        }
       };
     }
-  static _buildClosedToothPatches(driveSurf, coastSurf, nodesV, midArcFn) {
+
+  static _buildClosedToothPatches(driveSurf, coastSurf, nodesV, midArcFn, segU = 14, segV = 18) {
       const nodes3 = [0, 0.5, 1];
       const degU = driveSurf.degU;
       const nodesU = BezierSurface.chebyshevLobattoNodes(degU + 1);
@@ -526,20 +779,20 @@ class HypoidGearGenerator {
         z: 0.5 * (dMid.z + cMid.z)
       };
 
-      const orientOutward = (surface, segU, segV) => {
+      const orientOutward = (surface, sU, sV) => {
         const ev = surface.evaluateWithPartials(0.5, 0.5);
         const outVec = HypoidGearGenerator.vecSub(ev.point, centroid);
         const flipWinding = HypoidGearGenerator.vecDot(outVec, ev.normal) < 0;
-        return { surface, segU, segV, flipWinding };
+        return { surface, segU: sU, segV: sV, flipWinding };
       };
 
       return [
-        orientOutward(driveSurf, 14, 18),
-        orientOutward(coastSurf, 14, 18),
-        orientOutward(topLand, 4, 18),
-        orientOutward(rootBase, 4, 18),
-        orientOutward(toeCap, 14, 4),
-        orientOutward(heelCap, 14, 4)
+        orientOutward(driveSurf, segU, segV),
+        orientOutward(coastSurf, segU, segV),
+        orientOutward(topLand, 4, segV),
+        orientOutward(rootBase, 4, segV),
+        orientOutward(toeCap, segU, 4),
+        orientOutward(heelCap, segU, 4)
       ];
     }
   static fitBezierLeastSquares(sampleGrid, uSamples, vSamples, degU, degV) {
@@ -619,71 +872,80 @@ class HypoidGearGenerator {
       };
     }
 
-  static buildMechanicalLathes(THREE, ringDriveSurf, pinionDriveSurf) {
-      // 1. Chamfered forged Ring Gear blank
+  static buildMechanicalLathes(THREE, ringDriveSurf, ringCoastSurf, pinionDriveSurf, pinionCoastSurf) {
       const rToeD = ringDriveSurf.evaluate(0, 0);
+      const rToeC = ringCoastSurf.evaluate(0, 0);
       const rHeelD = ringDriveSurf.evaluate(0, 1);
-      const ringToeR = Math.hypot(rToeD.y, rToeD.z) - 0.002;
-      const ringHeelR = Math.hypot(rHeelD.y, rHeelD.z) - 0.002;
-      const ringToeX = rToeD.x + 0.004;
-      const ringHeelX = rHeelD.x + 0.004;
+      const rHeelC = ringCoastSurf.evaluate(0, 1);
+      const rHeelTipD = ringDriveSurf.evaluate(1, 1);
+      const rHeelTipC = ringCoastSurf.evaluate(1, 1);
+
+      const ringToeR = Math.min(Math.hypot(rToeD.y, rToeD.z), Math.hypot(rToeC.y, rToeC.z)) - 0.0015;
+      const ringHeelR = Math.min(Math.hypot(rHeelD.y, rHeelD.z), Math.hypot(rHeelC.y, rHeelC.z)) - 0.0015;
+      const ringHeelTipR = Math.max(Math.hypot(rHeelTipD.y, rHeelTipD.z), Math.hypot(rHeelTipC.y, rHeelTipC.z));
+      const ringToeX = Math.max(rToeD.x, rToeC.x) + 0.0015;
+      const ringHeelX = Math.max(rHeelD.x, rHeelC.x) + 0.0015;
       const ringBoreR = Math.max(0.45, ringToeR * 0.72);
-      const ringOuterR = ringHeelR + 0.032;
+      const ringOuterR = Math.max(ringHeelR + 0.036, ringHeelTipR + 0.008);
       const ringBackX = Math.max(ringToeX, ringHeelX) + 0.21;
 
-      const ringLathePts = [
-        new THREE.Vector2(ringBoreR, ringToeX + 0.045),
-        new THREE.Vector2(ringBoreR + 0.02, ringToeX + 0.025),
-        new THREE.Vector2(ringToeR - 0.015, ringToeX + 0.025),
-        new THREE.Vector2(ringToeR, ringToeX),
-        new THREE.Vector2(ringHeelR, ringHeelX),
-        new THREE.Vector2(ringOuterR, ringHeelX + 0.025),
-        new THREE.Vector2(ringOuterR, ringBackX - 0.02),
-        new THREE.Vector2(ringOuterR - 0.02, ringBackX),
-        new THREE.Vector2(ringBoreR + 0.02, ringBackX),
-        new THREE.Vector2(ringBoreR, ringBackX - 0.02),
-        new THREE.Vector2(ringBoreR, ringToeX + 0.045)
+      const ringCorners = [
+        { r: ringBoreR, y: ringToeX + 0.036, fillet: 0.012, segs: 5 },
+        { r: ringBoreR + 0.024, y: ringToeX + 0.016, fillet: 0.010, segs: 5 },
+        { r: ringToeR - 0.012, y: ringToeX + 0.014, fillet: 0.007, segs: 4 },
+        { r: ringToeR, y: ringToeX, fillet: 0.004, segs: 4 },
+        { r: ringHeelR, y: ringHeelX, fillet: 0.004, segs: 4 },
+        { r: ringOuterR, y: ringHeelX + 0.025, fillet: 0.012, segs: 5 },
+        { r: ringOuterR, y: ringBackX, fillet: 0.026, segs: 7 },
+        { r: ringBoreR, y: ringBackX, fillet: 0.016, segs: 6 }
       ];
-      const ringBodyGeometry = new THREE.LatheGeometry(ringLathePts, 64);
+      const ringBodyGeometry = HypoidGearGenerator.createFilletedLathe(THREE, ringCorners, 96);
       ringBodyGeometry.rotateZ(-Math.PI / 2);
+      const ringBodyWireGeometry = HypoidGearGenerator.buildLatheWireframe(THREE, ringCorners, 24, 64);
+      ringBodyWireGeometry.rotateZ(-Math.PI / 2);
 
-      // 2. Forged Pinion cone blank + stepped bearing journal + splined drive shaft
       const pToeD = pinionDriveSurf.evaluate(0, 0);
+      const pToeC = pinionCoastSurf.evaluate(0, 0);
       const pHeelD = pinionDriveSurf.evaluate(0, 1);
-      const pToeR = Math.max(0.08, Math.hypot(pToeD.x, pToeD.y) - 0.002);
-      const pHeelR = Math.max(0.12, Math.hypot(pHeelD.x, pHeelD.y) - 0.002);
-      const pToeZ = pToeD.z + 0.002;
-      const pHeelZ = pHeelD.z + 0.002;
+      const pHeelC = pinionCoastSurf.evaluate(0, 1);
+      const pToeR = Math.max(0.08, Math.min(Math.hypot(pToeD.x, pToeD.y), Math.hypot(pToeC.x, pToeC.y)) - 0.0015);
+      const pHeelR = Math.max(0.12, Math.min(Math.hypot(pHeelD.x, pHeelD.y), Math.hypot(pHeelC.x, pHeelC.y)) - 0.0015);
+      const pToeZ = Math.min(pToeD.z, pToeC.z) - 0.001;
+      const pHeelZ = Math.max(pHeelD.z, pHeelC.z) + 0.0015;
       const pShaftR = Math.min(0.21, pToeR * 0.58);
       const pJournalR = pShaftR * 1.18;
       const pSplineR = pShaftR * 0.88;
       const pThreadR = pShaftR * 0.62;
 
-      const pinionLathePts = [
-        new THREE.Vector2(0.001, pToeZ - 0.05),
-        new THREE.Vector2(pToeR * 0.68, pToeZ - 0.05),
-        new THREE.Vector2(pToeR * 0.92, pToeZ - 0.02),
-        new THREE.Vector2(pToeR, pToeZ),
-        new THREE.Vector2(pHeelR, pHeelZ),
-        new THREE.Vector2(pHeelR + 0.012, pHeelZ + 0.015),
-        new THREE.Vector2(pHeelR + 0.012, pHeelZ + 0.055),
-        new THREE.Vector2(pJournalR + 0.05, pHeelZ + 0.075),
-        new THREE.Vector2(pJournalR + 0.05, pHeelZ + 0.115),
-        new THREE.Vector2(pJournalR, pHeelZ + 0.12),
-        new THREE.Vector2(pJournalR, pHeelZ + 0.36),
-        new THREE.Vector2(pSplineR, pHeelZ + 0.45),
-        new THREE.Vector2(pSplineR, pHeelZ + 0.96),
-        new THREE.Vector2(pThreadR, pHeelZ + 0.97),
-        new THREE.Vector2(pThreadR, pHeelZ + 1.12),
-        new THREE.Vector2(pThreadR * 0.80, pHeelZ + 1.14),
-        new THREE.Vector2(0.001, pHeelZ + 1.14)
+      const pinionCorners = [
+        { r: 0.0005, y: pToeZ - 0.036, fillet: 0 },
+        { r: pToeR * 0.72, y: pToeZ - 0.036, fillet: 0.010, segs: 5 },
+        { r: pToeR * 0.94, y: pToeZ - 0.014, fillet: 0.007, segs: 4 },
+        { r: pToeR, y: pToeZ, fillet: 0.004, segs: 4 },
+        { r: pHeelR, y: pHeelZ, fillet: 0.004, segs: 4 },
+        { r: pHeelR + 0.014, y: pHeelZ + 0.018, fillet: 0.008, segs: 5 },
+        { r: pHeelR + 0.014, y: pHeelZ + 0.058, fillet: 0.014, segs: 6 },
+        { r: pJournalR + 0.05, y: pHeelZ + 0.075, fillet: 0.008, segs: 5 },
+        { r: pJournalR + 0.05, y: pHeelZ + 0.115, fillet: 0.006, segs: 4 },
+        { r: pJournalR, y: pHeelZ + 0.12, fillet: 0.012, segs: 5 },
+        { r: pJournalR, y: pHeelZ + 0.36, fillet: 0.010, segs: 5 },
+        { r: pSplineR, y: pHeelZ + 0.45, fillet: 0.014, segs: 5 },
+        { r: pSplineR, y: pHeelZ + 0.96, fillet: 0.006, segs: 4 },
+        { r: pThreadR, y: pHeelZ + 0.97, fillet: 0.006, segs: 4 },
+        { r: pThreadR, y: pHeelZ + 1.12, fillet: 0.008, segs: 4 },
+        { r: pThreadR * 0.80, y: pHeelZ + 1.14, fillet: 0 },
+        { r: 0.0005, y: pHeelZ + 1.14, fillet: 0 }
       ];
-      const pinionBodyGeometry = new THREE.LatheGeometry(pinionLathePts, 48);
+      const pinionBodyGeometry = HypoidGearGenerator.createFilletedLathe(THREE, pinionCorners, 72);
       pinionBodyGeometry.rotateX(Math.PI / 2);
+      const pinionBodyWireGeometry = HypoidGearGenerator.buildLatheWireframe(THREE, pinionCorners, 20, 48);
+      pinionBodyWireGeometry.rotateX(Math.PI / 2);
 
       return {
         ringBodyGeometry,
         pinionBodyGeometry,
+        ringBodyWireGeometry,
+        pinionBodyWireGeometry,
         mechanics: {
           ringToeR,
           ringHeelR,
@@ -702,6 +964,199 @@ class HypoidGearGenerator {
           pThreadR
         }
       };
+    }
+  static _buildFilletStrips(rawCorners) {
+      const corners = rawCorners.slice();
+      if (corners.length > 2) {
+        const first = corners[0];
+        const last = corners[corners.length - 1];
+        if (Math.hypot(first.r - last.r, first.y - last.y) < 1e-6) corners.pop();
+      }
+      const n = corners.length;
+      if (n < 3) return [];
+
+      const cornerData = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const prev = corners[(i - 1 + n) % n];
+        const curr = corners[i];
+        const next = corners[(i + 1) % n];
+
+        const inR = curr.r - prev.r;
+        const inY = curr.y - prev.y;
+        const lenIn = Math.hypot(inR, inY) || 1e-9;
+        const outR = next.r - curr.r;
+        const outY = next.y - curr.y;
+        const lenOut = Math.hypot(outR, outY) || 1e-9;
+
+        const eIn = { r: inR / lenIn, y: inY / lenIn };
+        const eOut = { r: outR / lenOut, y: outY / lenOut };
+        const u1 = { r: -eIn.r, y: -eIn.y };
+        const u2 = { r: eOut.r, y: eOut.y };
+        const dot = Math.max(-1, Math.min(1, u1.r * u2.r + u1.y * u2.y));
+        const theta = Math.acos(dot);
+
+        const wantedFillet = curr.fillet || 0;
+        if (wantedFillet > 1e-5 && curr.r > 0.008 && theta > 0.08 && theta < Math.PI - 0.08) {
+          const maxD = 0.42 * Math.min(lenIn, lenOut);
+          const halfTan = Math.tan(theta * 0.5);
+          const d = Math.min(maxD, wantedFillet / halfTan);
+          const R = d * halfTan;
+          if (R > 1e-5) {
+            const T1 = { r: curr.r + u1.r * d, y: curr.y + u1.y * d };
+            const T2 = { r: curr.r + u2.r * d, y: curr.y + u2.y * d };
+            const bisR = u1.r + u2.r;
+            const bisY = u1.y + u2.y;
+            const bisLen = Math.hypot(bisR, bisY) || 1;
+            const distO = R / Math.sin(theta * 0.5);
+            const O = { r: curr.r + (bisR / bisLen) * distO, y: curr.y + (bisY / bisLen) * distO };
+
+            const turnCross = eIn.r * eOut.y - eIn.y * eOut.r;
+            const normalSign = turnCross >= 0 ? 1 : -1;
+            const a0 = Math.atan2(T1.y - O.y, T1.r - O.r);
+            const a1 = Math.atan2(T2.y - O.y, T2.r - O.r);
+            const da = HypoidGearGenerator.wrapPi(a1 - a0);
+            const segs = curr.segs || 6;
+
+            const arcPts = [];
+            for (let s = 0; s <= segs; s++) {
+              const ang = a0 + (s / segs) * da;
+              arcPts.push({
+                r: Math.max(0.0002, O.r + R * Math.cos(ang)),
+                y: O.y + R * Math.sin(ang),
+                nr: normalSign * Math.cos(ang),
+                ny: normalSign * Math.sin(ang)
+              });
+            }
+            cornerData[i] = { start: T1, end: T2, arcPts };
+            continue;
+          }
+        }
+
+        const pt = { r: Math.max(0.0002, curr.r), y: curr.y };
+        cornerData[i] = { start: pt, end: pt, arcPts: null };
+      }
+
+      const strips = [];
+      for (let i = 0; i < n; i++) {
+        const p0 = cornerData[i].end;
+        const nextCorner = cornerData[(i + 1) % n];
+        const p1 = nextCorner.start;
+        const dr = p1.r - p0.r;
+        const dy = p1.y - p0.y;
+        const len = Math.hypot(dr, dy);
+        if (len > 1e-6) {
+          const nr = dy / len;
+          const ny = -dr / len;
+          strips.push([
+            { r: Math.max(0.0002, p0.r), y: p0.y, nr, ny },
+            { r: Math.max(0.0002, p1.r), y: p1.y, nr, ny }
+          ]);
+        }
+        if (nextCorner.arcPts) strips.push(nextCorner.arcPts);
+      }
+      return strips;
+    }
+
+  static createFilletedLathe(THREE, rawCorners, radialSegments = 96) {
+      const strips = HypoidGearGenerator._buildFilletStrips(rawCorners);
+      const positions = [];
+      const normals = [];
+      const uvs = [];
+      const indices = [];
+
+      let totalLen = 0;
+      const stripArc = [];
+      for (const st of strips) {
+        const acc = [0];
+        for (let j = 1; j < st.length; j++) {
+          totalLen += Math.hypot(st[j].r - st[j - 1].r, st[j].y - st[j - 1].y);
+          acc.push(totalLen);
+        }
+        stripArc.push(acc);
+      }
+      const invTotalLen = totalLen > 1e-6 ? 1 / totalLen : 1;
+
+      let baseVertex = 0;
+      for (let sIdx = 0; sIdx < strips.length; sIdx++) {
+        const st = strips[sIdx];
+        const acc = stripArc[sIdx];
+        const m = st.length;
+
+        for (let i = 0; i <= radialSegments; i++) {
+          const u = i / radialSegments;
+          const phi = u * Math.PI * 2;
+          const sinP = Math.sin(phi);
+          const cosP = Math.cos(phi);
+          for (let j = 0; j < m; j++) {
+            const p = st[j];
+            positions.push(p.r * sinP, p.y, p.r * cosP);
+            normals.push(p.nr * sinP, p.ny, p.nr * cosP);
+            uvs.push(u * 4, acc[j] * invTotalLen * 4);
+          }
+        }
+
+        for (let i = 0; i < radialSegments; i++) {
+          for (let j = 0; j < m - 1; j++) {
+            const a = baseVertex + i * m + j;
+            const b = baseVertex + (i + 1) * m + j;
+            const c = baseVertex + (i + 1) * m + (j + 1);
+            const d = baseVertex + i * m + (j + 1);
+            indices.push(a, b, d);
+            indices.push(b, c, d);
+          }
+        }
+        baseVertex += (radialSegments + 1) * m;
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geom.setIndex(indices);
+      return geom;
+    }
+
+  static buildLatheWireframe(THREE, rawCorners, meridianCount = 24, ringRadialSegs = 64) {
+      const strips = HypoidGearGenerator._buildFilletStrips(rawCorners);
+      const positions = [];
+      const offset = 0.0007;
+
+      for (const st of strips) {
+        for (let k = 0; k < meridianCount; k++) {
+          const phi = (k / meridianCount) * Math.PI * 2;
+          const sinP = Math.sin(phi);
+          const cosP = Math.cos(phi);
+          for (let j = 0; j < st.length - 1; j++) {
+            const p0 = st[j];
+            const p1 = st[j + 1];
+            const r0 = p0.r + p0.nr * offset;
+            const y0 = p0.y + p0.ny * offset;
+            const r1 = p1.r + p1.nr * offset;
+            const y1 = p1.y + p1.ny * offset;
+            positions.push(r0 * sinP, y0, r0 * cosP, r1 * sinP, y1, r1 * cosP);
+          }
+        }
+
+        const ringIndices = st.length > 2 ? [0, Math.floor(st.length / 2), st.length - 1] : [0];
+        for (const j of ringIndices) {
+          const p = st[j];
+          const r = p.r + p.nr * offset;
+          const y = p.y + p.ny * offset;
+          if (r < 0.01) continue;
+          for (let i = 0; i < ringRadialSegs; i++) {
+            const a0 = (i / ringRadialSegs) * Math.PI * 2;
+            const a1 = ((i + 1) / ringRadialSegs) * Math.PI * 2;
+            positions.push(
+              r * Math.sin(a0), y, r * Math.cos(a0),
+              r * Math.sin(a1), y, r * Math.cos(a1)
+            );
+          }
+        }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return geom;
     }
 }
 
