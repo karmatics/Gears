@@ -1,7 +1,7 @@
 {
   "name": "Gears",
-  "version": "1.0.1",
-  "description": "Meshing hypoid differential gears with involute Bezier surface teeth.",
+  "version": "1.0.2",
+  "description": "Meshing hypoid differential gears with involute Bezier surface teeth and optional test jig.",
   "type": "luno-web-app",
   "mainClass": "Gears",
   "entrypoint": {
@@ -14,6 +14,7 @@
     "Simple3dShapes.js",
     "BezierSurface.js",
     "HypoidGearGenerator.js",
+    "GearsTestJig.js",
     "DropInAsset.js",
     "Gears.js"
   ],
@@ -22,9 +23,10 @@
       "files": [
         "BezierSurface.js",
         "HypoidGearGenerator.js",
+        "GearsTestJig.js",
         "Gears.js"
       ],
-      "description": "Meshing hypoid differential gears with involute Bezier teeth (buildInto)"
+      "description": "Meshing hypoid differential gears with involute Bezier teeth & optional test jig (buildInto)"
     }
   },
   "library": [
@@ -40,6 +42,7 @@
       "Gears/luno.json",
       "Gears/BezierSurface.js",
       "Gears/HypoidGearGenerator.js",
+      "Gears/GearsTestJig.js",
       "Gears/DropInAsset.js",
       "Gears/Gears.js",
       "Gears/basic3d.css",
